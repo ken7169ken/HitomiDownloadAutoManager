@@ -3,18 +3,16 @@
   "name": "Hitomi Rescue Watch",
   "version": "0.2",
 
-  "permissions": [
-    "tabs",
-    "webRequest",
-    "scripting"
-  ],
+  "description": "Hitomi楽園のらくらく同人活動(ベータ版)",
+  "permissions": [ "tabs", "webRequest", "scripting", "contextMenus", "storage" ],
 
   "host_permissions": [
     "<all_urls>"
   ],
 
   "background": {
-    "service_worker": "SRC/Background/background.js"
+    "service_worker": "SRC/Background/background.js",
+    "type": "module"
   },
 
   "content_scripts": [

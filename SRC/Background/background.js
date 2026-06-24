@@ -1,78 +1,257 @@
-// JavaScript source code
-const watches = new Map();
+import { GetOrCreateWorkerWindow } from "../Worker/worker_windowManager.js";
+
+const MAX_RUNNING_DOWNLOADS = 6;
 
 const STUCK_MS = 11000;
 const CHECK_MS = 700;
 const STATUS_HISTORY_SIZE = 5;
 
-const RESCUE_OBSERVE_MS = 10000;
-const MAX_ACTIVE_PLAYERS = 5;
+const queue = [];
+const runningJobs = new Map();
+const watches = new Map();
 
-const rescueQueue = [];
-const queuedTabs = new Set();
-const activePlayers = new Set();
+let nextJobId = 1;
 
-let rescueBusy = false;
+console.log("background start");
 
-chrome.commands.onCommand.addListener(async (command) => {
-    if (command !== "start-hitomi-watch") return;
+const MENU_ID_DOWNLOAD_LINK = "download-link-with-manager";
 
-    const [tab] = await chrome.tabs.query({
-        active: true,
-        currentWindow: true
+///////////////////////////////////////////////////////////////////////////////////////////////////
+chrome.runtime.onInstalled.addListener(() => {
+    chrome.contextMenus.create({
+        id: MENU_ID_DOWNLOAD_LINK,
+        title: "リンク先のDownloadを実行",
+        contexts: ["link"],
+        documentUrlPatterns: [
+            "*://hitomi.la/*",
+            "*://*.hitomi.la/*"
+        ]
     });
-
-    if (!tab?.id) return;
-
-    startWatch(tab.id);
 });
 
-chrome.webRequest.onCompleted.addListener(
-    (details) => {
-        if (details.tabId < 0) return;
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// コンテキストメニューの「リンク先のDownloadを実行」がクリックされたときのプロシージャー
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+    if (info.menuItemId !== MENU_ID_DOWNLOAD_LINK) return;
+    if (!info.linkUrl) return;
 
-        const watch = watches.get(details.tabId);
-        if (!watch) return;
-        if (!isTargetWebpXhr(details)) return;
+    const job = {
+        id: nextJobId++,
+        url: info.linkUrl,
+        tabId: null,
+        title: null,
+        status: "opening",
+        resolveDone: null,
+        rejectDone: null
+    };
 
-        pushStatus(watch, details.statusCode);
+    queue.push(job);
+    console.log("[Hitomi] queued =", job);
 
-        if (details.statusCode === 200) {
-            watch.lastSuccessTime = Date.now();
-            watch.stuckReported = false;
+    await openWorkerTabForJob(job);
 
-            activePlayers.add(details.tabId);
+    job.status = "waiting";
+    console.log("[Hitomi] waiting =", job);
 
-            console.log(
-                `[HitomiRescue][tab:${details.tabId}] 🟢 200 success active=${activePlayers.size}/${MAX_ACTIVE_PLAYERS}`
-            );
-        } else {
-            console.log(`[HitomiRescue][tab:${details.tabId}] 🔴 status=${details.statusCode}`);
+    processQueue();
+});
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+async function cleanupWorkerTabs(workerWindowId) {
+    const tabs = await chrome.tabs.query({ windowId: workerWindowId });
+    if (tabs.length <= 0) {
+        console.log("[Hitomi] skip cleanup. only one tab");
+        return;
+    }
+
+    try {
+        tabs = await chrome.tabs.query({ windowId: workerWindowId });
+    }
+    catch (e) {
+        console.warn("[Hitomi] cleanup skipped. worker window missing =", workerWindowId);
+        return;
+    }
+
+    for (const tab of tabs) {
+        const isManaged =
+            queue.some(job => job.tabId === tab.id) ||
+            [...runningJobs.values()].some(job => job.tabId === tab.id) ||
+            watches.has(tab.id);
+
+        const isGarbage =
+            tab.url === "chrome://newtab/" ||
+            tab.url === "about:blank" ||
+            tab.title === "新しいタブ" ||
+            tab.title === "New Tab";
+
+        if (!isManaged || isGarbage) {
+            try {
+                await chrome.tabs.remove(tab.id);
+                console.log("[Hitomi] cleanup tab =", tab.id, tab.title, tab.url);
+            }
+            catch (e) {
+                console.warn("[Hitomi] cleanup failed =", tab.id, e);
+            }
         }
-    },
-    { urls: ["<all_urls>"] }
-);
+    }
+}
 
-chrome.webRequest.onErrorOccurred.addListener(
-    (details) => {
-        if (details.tabId < 0) return;
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// workerのタブだけはさきに開けておく。
+async function openWorkerTabForJob(job) {
+    const workerWindowId = await GetOrCreateWorkerWindow();
+    await cleanupWorkerTabs(workerWindowId);
 
-        const watch = watches.get(details.tabId);
-        if (!watch) return;
-        if (!isTargetWebpXhr(details)) return;
+    const workerTab = await chrome.tabs.create({
+        windowId: workerWindowId,
+        url: job.url,
+        active: false
+    });
 
-        pushStatus(watch, "ERROR");
+    job.tabId = workerTab.id;
 
-        console.log(`[HitomiRescue][tab:${details.tabId}] ❌ error=${details.error}`);
-    },
-    { urls: ["<all_urls>"] }
-);
+    console.log("[Hitomi] workerTab opened =", job);
+}
 
-function startWatch(tabId) {
-    stopWatch(tabId);
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// FIFO待機列を監視し、
+// 同時実行数に空きがあれば次のJobを開始する。
+// Job完了後は自分自身を再度呼び出し、
+// 次の待機Jobへ処理を引き継ぐ。
+async function processQueue() {
+    if (runningJobs.size >= MAX_RUNNING_DOWNLOADS) return;
+
+    const job = queue.find(x => x.status === "waiting");
+    if (!job) return;
+
+    runningJobs.set(job.id, job);
+    job.status = "running";
+
+    console.log("[Hitomi] start download =", job);
+
+    try {
+        await runDownloadJob(job);
+
+        job.status = "done";
+        console.log("[Hitomi] done job =", job);
+    }
+    catch (err) {
+        job.status = "error";
+        console.error("[Hitomi] error job =", job, err);
+    }
+    finally {
+        runningJobs.delete(job.id);
+        stopWatch(job.tabId);
+
+        if (job.tabId) {
+            try {
+                await chrome.tabs.remove(job.tabId);
+                console.log("[Hitomi] tab closed =", job.tabId);
+            }
+            catch (e) {
+                console.warn("[Hitomi] tab close failed =", job.tabId, e);
+            }
+        }
+
+        processQueue();
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// 単一のDownload Jobを実行する。
+// Worker Window上に専用Tabを生成し、
+// Hitomiページへ移動してDownloadボタンを押下する。
+// その後 webRequest を監視し、正常終了または通信停止を判定する。
+async function runDownloadJob(job) {
+    console.log("[Hitomi] workerTabId =", job.tabId);
+
+    if (!job.tabId) {
+        throw new Error("job.tabId is missing");
+    }
+
+    startWatch(job);
+
+    await sleep(1000);
+
+    const [pageInfo] = await chrome.scripting.executeScript({
+        target: { tabId: job.tabId },
+        func: () => ({
+            title: document.title,
+            url: location.href
+        })
+    });
+
+    job.title = pageInfo.result.title;
+
+    console.log("[Hitomi] pageInfo =", pageInfo.result);
+
+    const [downloadCandidates] = await chrome.scripting.executeScript({
+        target: { tabId: job.tabId },
+        func: () => {
+            return [...document.querySelectorAll("a, button")]
+                .map(el => ({
+                    tag: el.tagName,
+                    text: el.textContent?.trim(),
+                    href: el.href || null,
+                    id: el.id || null,
+                    className: el.className || null
+                }))
+                .filter(x =>
+                    (x.text && x.text.toLowerCase().includes("download")) ||
+                    (x.href && x.href.toLowerCase().includes("download"))
+                );
+        }
+    });
+
+    console.log("[Hitomi] download candidates =", downloadCandidates.result);
+
+    const [clickResult] = await chrome.scripting.executeScript({
+        target: { tabId: job.tabId },
+        func: () => {
+            const btn = document.querySelector("#dl-button");
+
+            if (!btn) {
+                return { ok: false, reason: "dl-button not found" };
+            }
+
+            btn.click();
+
+            return {
+                ok: true,
+                text: btn.textContent?.trim(),
+                href: btn.href
+            };
+        }
+    });
+
+    console.log("[Hitomi] clickResult =", clickResult.result);
+
+    if (!clickResult.result?.ok) {
+        throw new Error(clickResult.result?.reason || "download click failed");
+    }
+
+    await waitJobDone(job);
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Job完了まで待つ。
+// startWatch側が正常終了を検知したら resolve される。
+function waitJobDone(job) {
+    return new Promise((resolve, reject) => {
+        job.resolveDone = resolve;
+        job.rejectDone = reject;
+    });
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// 指定Jobの通信監視を開始する。
+// webRequestの成功履歴を見て、通信停止や正常終了を判定する。
+function startWatch(job) {
+    stopWatch(job.tabId);
 
     const watch = {
-        tabId,
+        job,
+        tabId: job.tabId,
         lastSuccessTime: null,
         recentStatuses: [],
         stuckReported: false,
@@ -80,27 +259,31 @@ function startWatch(tabId) {
     };
 
     watch.timerId = setInterval(() => {
-        checkSilent(tabId);
+        checkSilent(job.tabId);
     }, CHECK_MS);
 
-    watches.set(tabId, watch);
+    watches.set(job.tabId, watch);
 
-    console.log(`[HitomiRescue][tab:${tabId}] 👀 watch started`);
+    console.log(`[Hitomi][tab:${job.tabId}] watch started`);
 }
 
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// 指定Tabの通信監視を停止する。
 function stopWatch(tabId) {
+    if (!tabId) return;
+
     const watch = watches.get(tabId);
     if (!watch) return;
 
     clearInterval(watch.timerId);
     watches.delete(tabId);
 
-    queuedTabs.delete(tabId);
-    activePlayers.delete(tabId);
-
-    console.log(`[HitomiRescue][tab:${tabId}] 🛑 watch stopped active=${activePlayers.size}/${MAX_ACTIVE_PLAYERS}`);
+    console.log(`[Hitomi][tab:${tabId}] watch stopped`);
 }
 
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// 一定時間 200 成功通信が無い場合、
+// last5が全部200なら正常終了、そうでなければ復活の呪文を唱える。
 function checkSilent(tabId) {
     const watch = watches.get(tabId);
     if (!watch) return;
@@ -109,127 +292,69 @@ function checkSilent(tabId) {
     const silentMs = Date.now() - watch.lastSuccessTime;
     if (silentMs < STUCK_MS) return;
 
+    console.log(
+        `[Hitomi][tab:${tabId}] silent=${Math.round(silentMs / 1000)}s last5=${watch.recentStatuses.join(",")}`
+    );
+
     const allLast5Are200 =
         watch.recentStatuses.length === STATUS_HISTORY_SIZE &&
         watch.recentStatuses.every(status => status === 200);
 
     if (allLast5Are200) {
-        console.log(
-            `[HitomiRescue][tab:${tabId}] 🎉 正常終了っぽい。last5=${watch.recentStatuses.join(",")}`
-        );
+        console.log(`[Hitomi][tab:${tabId}] normal finish detected`);
 
-        stopWatch(tabId);
-        pumpRescueQueue();
+        const job = watch.job;
+        job.resolveDone?.();
+
         return;
     }
 
-    reportStuck(
-        tabId,
-        `no-success-${Math.round(silentMs / 1000)}s last5=${watch.recentStatuses.join(",")}`
-    );
+    reportStuck(tabId, `no-success-${Math.round(silentMs / 1000)}s last5=${watch.recentStatuses.join(",")}`);
 }
 
-function reportStuck(tabId, reason) {
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// 通信停止扱いにして、復活の呪文を唱える。
+async function reportStuck(tabId, reason) {
     const watch = watches.get(tabId);
     if (!watch || watch.stuckReported) return;
 
     watch.stuckReported = true;
-    activePlayers.delete(tabId);
 
-    console.log(
-        `[HitomiRescue][tab:${tabId}] 🚑💥🩸😱 通信血栓！退場 active=${activePlayers.size}/${MAX_ACTIVE_PLAYERS} reason=${reason}`
-    );
+    console.log(`[Hitomi][tab:${tabId}] stuck detected reason=${reason}`);
 
-    chrome.tabs.sendMessage(tabId, {
-        type: "HITOMI_STUCK",
-        reason
-    }).catch(() => {});
+    await castRescueSpell(tabId);
 
-    enqueueRescue(tabId, reason);
+    watch.stuckReported = false;
 }
 
-function enqueueRescue(tabId, reason) {
-    if (queuedTabs.has(tabId)) {
-        console.log(`[HitomiRescue][tab:${tabId}] 🪑 既に待合室`);
-        return;
-    }
-
-    queuedTabs.add(tabId);
-    rescueQueue.push({ tabId, reason });
-
-    console.log(
-        `[HitomiRescue][tab:${tabId}] 🪑 待合室入り queue=${rescueQueue.length} active=${activePlayers.size}/${MAX_ACTIVE_PLAYERS}`
-    );
-
-    pumpRescueQueue();
-}
-
-async function pumpRescueQueue() {
-    if (rescueBusy) return;
-
-    rescueBusy = true;
-
-    try {
-        while (
-            rescueQueue.length > 0 &&
-            activePlayers.size < MAX_ACTIVE_PLAYERS
-        ) {
-            const patient = rescueQueue.shift();
-            queuedTabs.delete(patient.tabId);
-
-            const watch = watches.get(patient.tabId);
-            if (!watch) continue;
-
-            console.log(
-                `[HitomiRescue][tab:${patient.tabId}] 🩺 診察開始 queue=${rescueQueue.length} active=${activePlayers.size}/${MAX_ACTIVE_PLAYERS}`
-            );
-
-            await castRescueSpell(patient.tabId);
-
-            activePlayers.add(patient.tabId);
-
-            console.log(
-                `[HitomiRescue][tab:${patient.tabId}] 🏟️ プレーグラウンド復帰 active=${activePlayers.size}/${MAX_ACTIVE_PLAYERS}`
-            );
-
-            console.log(
-                `[HitomiRescue][tab:${patient.tabId}] 🛌 安定観察 ${RESCUE_OBSERVE_MS / 1000}s`
-            );
-
-            await sleep(RESCUE_OBSERVE_MS);
-        }
-    } finally {
-        rescueBusy = false;
-    }
-}
-
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// 復活の呪文。
+// Worker Tab内で #dl-button を再クリックする。
 async function castRescueSpell(tabId) {
-    console.log(`[HitomiRescue][tab:${tabId}] 🪄✨⚡ 復活の呪文 Ctrl+Shift+5 代理発火！`);
+    console.log(`[Hitomi][tab:${tabId}] rescue spell`);
 
     try {
         await chrome.scripting.executeScript({
             target: { tabId },
             func: () => {
-                console.log(
-                    "%c🪄✨⚡ 復活の呪文を唱えた！",
-                    "color:lime;font-size:22px;font-weight:bold;"
-                );
-
                 const button = document.querySelector("#dl-button");
 
                 if (!button) {
-                    console.log("[HitomiRescue] #dl-button が見つからない");
+                    console.log("[Hitomi] #dl-button not found");
                     return;
                 }
 
                 button.click();
             }
         });
-    } catch (error) {
-        console.log(`[HitomiRescue][tab:${tabId}] 復活の呪文失敗: ${error.message}`);
+    }
+    catch (error) {
+        console.log(`[Hitomi][tab:${tabId}] rescue failed: ${error.message}`);
     }
 }
 
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// 通信ステータス履歴を最大 STATUS_HISTORY_SIZE 件だけ保持する。
 function pushStatus(watch, status) {
     watch.recentStatuses.push(status);
 
@@ -238,6 +363,8 @@ function pushStatus(watch, status) {
     }
 }
 
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Hitomiの画像通信だけを監視対象にする。
 function isTargetWebpXhr(details) {
     return (
         details.type === "xmlhttprequest" &&
@@ -252,3 +379,45 @@ function isTargetWebpXhr(details) {
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+chrome.webRequest.onCompleted.addListener(
+    details => {
+        if (details.tabId < 0) return;
+
+        const watch = watches.get(details.tabId);
+        if (!watch) return;
+        if (!isTargetWebpXhr(details)) return;
+
+        pushStatus(watch, details.statusCode);
+
+        if (details.statusCode === 200) {
+            watch.lastSuccessTime = Date.now();
+            watch.stuckReported = false;
+
+            console.log(
+                `[Hitomi][tab:${details.tabId}] 200 success last5=${watch.recentStatuses.join(",")}`
+            );
+        }
+        else {
+            console.log(`[Hitomi][tab:${details.tabId}] status=${details.statusCode}`);
+        }
+    },
+    { urls: ["<all_urls>"] }
+);
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+chrome.webRequest.onErrorOccurred.addListener(
+    details => {
+        if (details.tabId < 0) return;
+
+        const watch = watches.get(details.tabId);
+        if (!watch) return;
+        if (!isTargetWebpXhr(details)) return;
+
+        pushStatus(watch, "ERROR");
+
+        console.log(`[Hitomi][tab:${details.tabId}] error=${details.error}`);
+    },
+    { urls: ["<all_urls>"] }
+);

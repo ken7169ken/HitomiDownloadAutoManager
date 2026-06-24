@@ -1,1 +1,20 @@
-<Solution />
+<Solution>
+  <Folder Name="/SRC/" />
+  <Folder Name="/SRC/Background/">
+    <File Path="SRC/Background/background.js" />
+  </Folder>
+  <Folder Name="/SRC/Content/">
+    <File Path="SRC/Content/content.js" />
+  </Folder>
+  <Folder Name="/SRC/SubWin/" />
+  <Folder Name="/SRC/Worker/">
+    <File Path="SRC/Worker/worker_jobs.js" />
+    <File Path="SRC/Worker/worker_messageEngine.js" />
+    <File Path="SRC/Worker/worker_messageHandlers.js" />
+    <File Path="SRC/Worker/worker_tabManager.js" />
+    <File Path="SRC/Worker/worker_windowManager.js" />
+  </Folder>
+  <Folder Name="/ソリューション項目/">
+    <File Path="manifest.json" />
+  </Folder>
+</Solution>
