@@ -2,18 +2,34 @@
   "manifest_version": 3,
   "name": "Hitomi Rescue Watch",
   "version": "0.2",
-  "permissions": [ "tabs", "webRequest", "scripting" ],
-  "host_permissions": [ "<all_urls>" ],
+
+  "permissions": [
+    "tabs",
+    "webRequest",
+    "scripting"
+  ],
+
+  "host_permissions": [
+    "<all_urls>"
+  ],
+
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "SRC/Background/background.js"
   },
+
   "content_scripts": [
     {
-      "matches": [ "*://hitomi.la/*", "*://*.hitomi.la/*" ],
-      "js": [ "content.js" ],
+      "matches": [
+        "*://hitomi.la/*",
+        "*://*.hitomi.la/*"
+      ],
+      "js": [
+        "SRC/Content/content.js"
+      ],
       "run_at": "document_start"
     }
   ],
+
   "commands": {
     "start-hitomi-watch": {
       "suggested_key": {
