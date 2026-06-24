@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Hitomi Rescue Watch",
+  "version": "0.2",
+  "permissions": [ "tabs", "webRequest", "scripting" ],
+  "host_permissions": [ "<all_urls>" ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [ "*://hitomi.la/*", "*://*.hitomi.la/*" ],
+      "js": [ "content.js" ],
+      "run_at": "document_start"
+    }
+  ],
+  "commands": {
+    "start-hitomi-watch": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+6"
+      },
+      "description": "Start Hitomi stuck watcher"
+    }
+  }
+}
