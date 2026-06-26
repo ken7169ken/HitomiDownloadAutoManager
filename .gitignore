@@ -1,4 +1,10 @@
 .vs/
+.vscode/
+
 *.user
 *.suo
 *.lnk
+
+node_modules/
+
+npm-debug.log*

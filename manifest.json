@@ -2,36 +2,27 @@
   "manifest_version": 3,
   "name": "Hitomi Rescue Watch",
   "version": "0.3",
-
-  "description": "Hitomi楽園のらくらく同人活動(ベータ版)",
+  "description": "Hitomi楽園のらくらく同人活動",
 
   "permissions": [
-    "tabs",        "webRequest",
-    "scripting",   "contextMenus",
-    "storage",     "downloads"
+    "tabs",
+    "contextMenus"
   ],
 
   "host_permissions": [
-    "*://hitomi.la/*",
-    "*://*.hitomi.la/*",
-    "*://gold-usergeneratedcontent.net/*",
-    "*://*.gold-usergeneratedcontent.net/*"
+    "https://hitomi.la/*",
+    "https://*.hitomi.la/*",
+    "http://127.0.0.1:18765/*"
   ],
-
-  "background": {
-    "service_worker": "SRC/Background/background.js",
-    "type": "module"
-  },
 
   "content_scripts": [
     {
       "matches": [
-        "*://hitomi.la/*",
-        "*://*.hitomi.la/*"
+        "https://hitomi.la/*",
+        "https://*.hitomi.la/*"
       ],
       "js": [
-        "SRC/Lib/jszip.min.js",
-        "SRC/Content/content.js"
+        "content.js"
       ],
       "run_at": "document_start"
     }

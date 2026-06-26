@@ -1,4 +1,8 @@
 <Solution>
+  <Folder Name="/POC/">
+    <File Path="POC/playwright-test.js" />
+    <File Path="POC/server.js" />
+  </Folder>
   <Folder Name="/SRC/" />
   <Folder Name="/SRC/Background/">
     <File Path="SRC/Background/background.js" />
