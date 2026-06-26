@@ -1,39 +1,30 @@
 {
   "manifest_version": 3,
   "name": "Hitomi Rescue Watch",
-  "version": "0.2",
+  "version": "0.3",
+  "description": "Hitomi楽園のらくらく同人活動",
 
-  "description": "Hitomi楽園のらくらく同人活動(ベータ版)",
-  "permissions": [ "tabs", "webRequest", "scripting", "contextMenus", "storage" ],
-
-  "host_permissions": [
-    "<all_urls>"
+  "permissions": [
+    "tabs",
+    "contextMenus"
   ],
 
-  "background": {
-    "service_worker": "SRC/Background/background.js",
-    "type": "module"
-  },
+  "host_permissions": [
+    "https://hitomi.la/*",
+    "https://*.hitomi.la/*",
+    "http://127.0.0.1:18765/*"
+  ],
 
   "content_scripts": [
     {
       "matches": [
-        "*://hitomi.la/*",
-        "*://*.hitomi.la/*"
+        "https://hitomi.la/*",
+        "https://*.hitomi.la/*"
       ],
       "js": [
-        "SRC/Content/content.js"
+        "content.js"
       ],
       "run_at": "document_start"
     }
-  ],
-
-  "commands": {
-    "start-hitomi-watch": {
-      "suggested_key": {
-        "default": "Ctrl+Shift+6"
-      },
-      "description": "Start Hitomi stuck watcher"
-    }
-  }
+  ]
 }
