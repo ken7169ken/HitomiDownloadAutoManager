@@ -6,12 +6,9 @@
   "description": "Hitomi楽園のらくらく同人活動(ベータ版)",
 
   "permissions": [
-    "tabs",
-    "webRequest",
-    "scripting",
-    "contextMenus",
-    "storage",
-    "downloads"
+    "tabs",        "webRequest",
+    "scripting",   "contextMenus",
+    "storage",     "downloads"
   ],
 
   "host_permissions": [

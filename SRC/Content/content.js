@@ -156,6 +156,34 @@ async function rewriteImageUrl(url, dir) {
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////
+async function registerDownloadJob(title, pageUrl, items) {
+    return new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage({
+            type: "REGISTER_DOWNLOAD_JOB",
+            title,
+            pageUrl,
+            items
+        }, response => {
+            if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+                return;
+            }
+
+            if (!response?.ok) {
+                reject(new Error(response?.error || "register job failed"));
+                return;
+            }
+
+            console.log("[HitomiDirect] job registered =", response.jobId);
+            resolve(response);
+        });
+    });
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////
+/*
 async function downloadAllPagesFromHitomiPage(pageUrl) {
     const galleryId = extractGalleryId(pageUrl);
     if (!galleryId) {
@@ -183,17 +211,10 @@ async function downloadAllPagesFromHitomiPage(pageUrl) {
 
         const res = await fetch(imageUrl);
 
-        console.log(
-            `[HitomiDirect] ${pageNumber}/${galleryInfo.files.length} status =`,
-            res.status,
-            res.headers.get("content-type")
-        );
+        console.log(`[HitomiDirect] ${pageNumber}/${galleryInfo.files.length} status =`, res.status, res.headers.get("content-type"));
 
         if (!res.ok) {
-            console.error(
-                `[HitomiDirect] fetch failed ${pageNumber}:`,
-                await res.text()
-            );
+            console.error(`[HitomiDirect] fetch failed ${pageNumber}:`, await res.text());
             continue;
         }
 
@@ -215,6 +236,121 @@ async function downloadAllPagesFromHitomiPage(pageUrl) {
     setTimeout( () => {URL.revokeObjectURL(zipUrl); }, 60_000 );
 
     console.log("[HitomiDirect] zip completed");
+}
+
+async function downloadAllPagesFromHitomiPage(pageUrl) {
+    const galleryId = extractGalleryId(pageUrl);
+    if (!galleryId) throw new Error("galleryId not found");
+
+    const galleryInfo = await fetchGalleryInfo(galleryId);
+
+    console.log("[HitomiDirect] title =", galleryInfo.title);
+    console.log("[HitomiDirect] pages =", galleryInfo.files.length);
+
+    const title = sanitizeFileName(titleFromHitomiPageUrl(pageUrl));
+
+    const items = [];
+
+    for (let i = 0; i < galleryInfo.files.length; i++) {
+        const file = galleryInfo.files[i];
+        const pageNumber = i + 1;
+        const pageName = String(pageNumber).padStart(4, "0");
+
+        const imageUrl = await imageUrlFromHash(file, "webp");
+
+        items.push({
+            index: i,
+            url: imageUrl,
+            filename: `${title}/${pageName}.webp`
+        });
+
+        console.log(`[HitomiDirect] ${pageNumber}/${galleryInfo.files.length} registered url =`, imageUrl);
+    }
+
+    if (items.length > 0) {
+        try {
+            const res = await fetch(items[0].url);
+            console.log("[HitomiDirect] fetch test =", res.status, res.headers.get("content-type"));
+        } catch (error) {
+            console.error("[HitomiDirect] fetch test failed =", error);
+        }
+    }
+
+    await registerDownloadJob(title, pageUrl, items);
+
+    console.log("[HitomiDirect] job registered, download will be handled by background");
+}
+*/
+async function downloadAllPagesFromHitomiPage(pageUrl) {
+    const galleryId = extractGalleryId(pageUrl);
+    if (!galleryId) throw new Error("galleryId not found");
+
+    const galleryInfo = await fetchGalleryInfo(galleryId);
+
+    console.log("[HitomiDirect] title =", galleryInfo.title);
+    console.log("[HitomiDirect] pages =", galleryInfo.files.length);
+
+    const title = sanitizeFileName(titleFromHitomiPageUrl(pageUrl));
+    const items = [];
+
+    for (let i = 0; i < galleryInfo.files.length; i++) {
+        const file = galleryInfo.files[i];
+        const pageNumber = i + 1;
+        const pageName = String(pageNumber).padStart(4, "0");
+
+        const imageUrl = await imageUrlFromHash(file, "webp");
+
+        items.push({
+            index: i,
+            url: imageUrl,
+            filename: `${title}/${pageName}.webp`
+        });
+
+        console.log(`[HitomiDirect] ${pageNumber}/${galleryInfo.files.length} registered url =`, imageUrl);
+    }
+
+    const registered = await registerDownloadJob(title, pageUrl, items);
+    const jobId = registered.jobId;
+
+    console.log("[HitomiDirect] job registered =", jobId);
+
+    for (const item of items) {
+        // 鯖からの画像ファイルが入ったレスポンス。fetch() が content.js の中なら 200 image/webp を返す。
+        // つまり、ページ上にいる間は、ブラウザが持っているCookieやRefererなどの文脈のおかげで画像を正常に取得できる。
+        // 一方で background から直接 fetch() すると、404 text/html となる。
+        // 作品URL
+        // 画像URL一覧
+        // Cookie
+        // Referer
+        // User-Agent
+        const res = await fetch(item.url);
+        console.log("[HitomiDirect] fetch blob =", item.index + 1, res.status, res.headers.get("content-type"));
+
+        if (!res.ok) {
+            console.error("[HitomiDirect] fetch failed =", item.filename, res.status);
+            continue;
+        }
+
+        // HTTPレスポンス → 画像データだけ取り出す → Blob
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+
+        await sendDownloadBlob(blobUrl, item.filename);
+
+        setTimeout(() => {
+            URL.revokeObjectURL(blobUrl);
+        }, 60_000);
+
+        console.log("[HitomiDirect] blob download requested =", item.filename);
+
+        //await sleep(150);
+    }
+
+    setTimeout(() => {
+        URL.revokeObjectURL(blobUrl);
+    }, 60_000);
+
+    console.log("[HitomiDirect] one blob download requested =", item.filename);
 }
 
 //----- - ----- - ----- - ----- - ----- - ----- - -----
