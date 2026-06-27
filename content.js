@@ -1,27 +1,10 @@
 console.log("content.js loaded - Test Hitomi Project");
 
-let isF13Down = false;
 let capturedLink = null;
 
 //---------------------------------------------- - ----------------------------------------------
-window.addEventListener("keydown", e => {
-    if (e.key === "F13") {
-        isF13Down = true;
-        console.log("[HitomiPW] F13 down");
-    }
-}, true);
-
-//---------------------------------------------- - ----------------------------------------------
-window.addEventListener("keyup", e => {
-    if (e.key === "F13") {
-        isF13Down = false;
-        console.log("[HitomiPW] F13 up");
-    }
-}, true);
-
-//---------------------------------------------- - ----------------------------------------------
 document.addEventListener("mousedown", e => {
-    if (!isF13Down) return;
+    if (!e.altKey) return;
     if (e.button !== 0) return;
 
     const link = e.target.closest("a");
@@ -38,7 +21,7 @@ document.addEventListener("mousedown", e => {
 
 //---------------------------------------------- - ----------------------------------------------
 document.addEventListener("mouseup", async e => {
-    if (!isF13Down) {
+    if (!e.altKey) {
         capturedLink = null;
         return;
     }
@@ -73,7 +56,7 @@ document.addEventListener("mouseup", async e => {
 
 //---------------------------------------------- - ----------------------------------------------
 document.addEventListener("click", e => {
-    if (!capturedLink && !isF13Down) return;
+    if (!capturedLink && !e.altKey) return;
 
     console.log("[HitomiPW] click blocked");
 

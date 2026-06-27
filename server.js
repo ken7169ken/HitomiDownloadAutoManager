@@ -84,7 +84,9 @@ function debug(...args)
     fs.appendFileSync(DEBUG_LOG, line);
 
     readline.moveCursor(process.stdout, 0, 1);
+    
     writeLiveLogLine(createLiveLogText(args));
+    
     readline.moveCursor(process.stdout, 0, -1);
     readline.cursorTo(process.stdout, 0);
 }
@@ -94,7 +96,7 @@ function writeLiveLogLine(text) {
     if (!process.stdout.isTTY) return;
 
     const width = process.stdout.columns || 80;
-    const safeWidth = Math.min(90, Math.max(20, width - 4));
+    const safeWidth = Math.min(80, Math.max(20, width - 4));
 
     let oneLine = text
         .replace(/\r?\n/g, " ")
@@ -128,7 +130,8 @@ function createLiveLogText(args) {
         .slice(0, char_num);
 
     //return `[${time}] ${tag} ${body}…`;
-    return `${tag} ${body}…`;
+    //return `${tag} ${body}…`;
+    return `${body}…`;
 }
 
 //@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
@@ -287,12 +290,12 @@ async function pumpQueue() {
                     job.retryCount++;
 
                     updateJobLine(job, `↻${job.retryCount}`);
-                    debug("[PW][ZOMBIE RETRY]", {
-                        title: job.title,
-                        retryCount: job.retryCount,
-                        maxRetryCount: job.maxRetryCount,
-                        message: error.message
-                    });
+                    debug(
+                        "[PW][ZOMBIE RETRY]",
+                        job.title,
+                        `${job.retryCount}/${job.maxRetryCount}`,
+                        error.message
+                    );
 
                     await sleep(RETRY_WAIT_MS);
 
@@ -359,11 +362,12 @@ async function runJob(job) {
         });
 
         // for Debug
-        debug("[PW][GOTO OK]", {
-            title: job.title,
-            status: response?.status(),
-            url: response?.url()
-        });        
+        debug(
+            "[PW][GOTO OK]",
+            job.title,
+            response?.status(),
+            response?.url()
+        );       
 
         const title = await page.title();
         debug("[PW] page title =", title);
@@ -401,12 +405,13 @@ async function runJob(job) {
         debug("[PW] phase   =", phase);
         debug("[PW] name    =", error.name);
         debug("[PW] message =", error.message);
-        debug("[PW][JOB ERROR]", {
-            title  : job.title,
-            url    : job.url,
-            name   : error.name,
-            message: error.message
-        });        
+        debug(
+            "[PW][JOB ERROR]",
+            job.title,
+            error.name,
+            error.message,
+            job.url
+        );     
         throw error;
     }
     finally {
@@ -415,7 +420,7 @@ async function runJob(job) {
 }
 
 //---------------------------------------------- - ----------------------------------------------
-function attachDebugRunJob(page, job, requestStartMap, getPhase)
+async function attachDebugRunJob(page, job, requestStartMap, getPhase)
 {
     page.on("request", req => {
         if (req.isNavigationRequest()) {
@@ -424,64 +429,92 @@ function attachDebugRunJob(page, job, requestStartMap, getPhase)
         }
     });
 
+    let downloadedImages = 0;
+    const totalImages = await page.waitForFunction(() => {
+        return window.galleryinfo?.files?.length ?? null; }, { timeout: 60_000 }
+    ).then(handle => handle.jsonValue());
+
+    page.on("requestfinished", req => {
+        const url = req.url();
+
+        const isHitomiPageImage = req.resourceType() === "xhr" && url.includes("gold-usergeneratedcontent.net") && url.includes(".webp");
+
+        if (!isHitomiPageImage) return;
+
+        downloadedImages++;
+
+        debug(
+            "[PW][IMAGE DONE]",
+            job.title,
+            `${downloadedImages}/${totalImages}`,
+            url
+        );
+    });
+    
     page.on("requestfailed", req => {
         const startedAt = requestStartMap.get(req);
         const elapsed = startedAt ? Date.now() - startedAt : "?";
 
-        debug("[PW][REQ FAILED]", {
-            title: job.title,
-            method: req.method(),
-            url: req.url(),
-            resourceType: req.resourceType(),
-            isNavigationRequest: req.isNavigationRequest(),
-            elapsed,
-            failure: req.failure()
-        });
+        debug(
+            "[PW][REQ FAILED]",
+            job.title,
+            req.method(),
+            req.resourceType(),
+            req.isNavigationRequest() ? "NAV" : "-",
+            `${elapsed}ms`,
+            req.failure()?.errorText ?? "",
+            req.url()
+        );
     });
 
     page.on("response", res => {
         const req = res.request();
 
         if (req.isNavigationRequest() || !res.ok()) {
-            debug("[PW][RES]", {
-                title: job.title,
-                status: res.status(),
-                statusText: res.statusText(),
-                url: res.url(),
-                resourceType: req.resourceType(),
-                isNavigationRequest: req.isNavigationRequest()
-            });
+            debug(
+                "[PW][RES]",
+                job.title,
+                res.status(),
+                res.statusText(),
+                req.resourceType(),
+                req.isNavigationRequest() ? "NAV" : "-",
+                res.url()
+            );
         }
     });
 
     page.on("console", msg => {
-        debug("[PW][PAGE CONSOLE]", {
-            title: job.title,
-            type: msg.type(),
-            text: msg.text()
-        });
+        debug(
+            "[PW][PAGE CONSOLE]",
+            job.title,
+            msg.type(),
+            msg.text()
+        );
     });
 
     page.on("pageerror", error => {
-        debug("[PW][PAGE ERROR]", {
-            title: job.title,
-            name: error.name,
-            message: error.message
-        });
+        debug(
+            "[PW][PAGE ERROR]",
+            job.title,
+            error.name,
+            error.message
+        );
     });
 
     page.on("close", () => {
-        debug("[PW][PAGE CLOSE]", {
-            title: job.title,
-            phase: getPhase()
-        });
+        debug(
+            "[PW][PAGE CLOSE]",
+            job.title,
+            getPhase()
+        );
     });
 
     page.on("crash", () => {
-        debug("[PW][PAGE CRASH]", {
-            title: job.title,
-            phase: getPhase()
-        });
+        debug(
+            "[PW][PAGE CRASH]",
+            job.title,
+            getPhase()
+        );
     });
 }
 
